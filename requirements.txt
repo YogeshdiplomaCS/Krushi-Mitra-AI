@@ -1,0 +1,9 @@
+streamlit
+requests
+python-dotenv
+pandas
+pillow
+streamlit-mic-recorder
+folium
+streamlit-folium
+streamlit-geolocationac
