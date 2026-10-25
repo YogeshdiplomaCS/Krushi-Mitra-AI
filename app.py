@@ -3,6 +3,7 @@ from io import BytesIO
 import requests
 import pandas as pd
 import streamlit as st
+from auth import render_auth_gate
 
 # Optional online text-to-speech (no API key; internet required)
 try:
@@ -269,12 +270,18 @@ defaults = {
     "language": "Kannada",
     "weather_coords": None,
     "weather_place": "",
+    "weather_search_results": [],
+    "weather_search_label": "",
     "last_answer": "",
 }
 
 for key, value in defaults.items():
     if key not in st.session_state:
         st.session_state[key] = value
+
+# Require account login before showing the farming application.
+if not render_auth_gate():
+    st.stop()
 
 
 # ---------------------------------------------------------
@@ -284,6 +291,13 @@ for key, value in defaults.items():
 with st.sidebar:
     st.title("🌱 Krushi Mitra AI")
     st.caption("Your smart farming companion")
+    current_user = st.session_state.get("auth_user", {})
+    if current_user:
+        st.caption(f"👤 {current_user.get('full_name', 'Farmer')}")
+        if st.button("🚪 Logout", use_container_width=True):
+            st.session_state.pop("auth_user", None)
+            st.session_state.messages = []
+            st.rerun()
 
     selected_language = st.selectbox(
         "🌐 Output Language",
@@ -444,7 +458,11 @@ def get_weather(latitude, longitude):
 
     response.raise_for_status()
     body = response.json()
-
+    if not isinstance(body, dict):
+        raise ValueError("Weather service returned an unexpected response.")
+    if body.get("error"):
+        reason = body.get("reason", "Weather service reported an error.")
+        raise ValueError(str(reason))
     return body
 
 
@@ -857,79 +875,65 @@ elif page == "🌦️ Weather":
             )
 
     elif location_mode == "🔎 Enter Place Name":
+        # Keep geocoding results in session state so the selection remains
+        # visible after Streamlit reruns the script.
         with st.form("place_search_form"):
             place_name = st.text_input(
                 "Town, village, or farm area",
                 placeholder="e.g. Chamarajanagar, Mysuru",
             )
-
             find_place = st.form_submit_button(
-                "Find Place and Get Weather",
+                "🔎 Search Location",
                 type="primary",
             )
 
         if find_place:
             if not place_name.strip():
-                st.warning("Enter a location name.")
+                st.warning("Enter a town, village, or farm area.")
             else:
                 try:
                     with st.spinner("Searching for your location..."):
-                        places = search_place(place_name.strip())
-
-                    if not places:
-                        st.error(
-                            "Location not found. Try another spelling."
-                        )
-                    else:
-                        options = [
-                            (
-                                f"{item.get('name', 'Unknown')}, "
-                                f"{item.get('admin1', '')}, "
-                                f"{item.get('country', '')}"
-                            )
-                            for item in places
-                        ]
-
-                        chosen_index = 0
-
-                        # Prefer Karnataka when available.
-                        for index, item in enumerate(places):
-                            if (
-                                item.get("admin1", "").casefold()
-                                == "karnataka"
-                            ):
-                                chosen_index = index
-                                break
-
-                        selected_place = st.selectbox(
-                            "Confirm Matching Location",
-                            options,
-                            index=chosen_index,
-                            key="selected_geocoded_place",
-                        )
-
-                        selected_index = options.index(selected_place)
-                        selected_data = places[selected_index]
-
-                        st.caption(
-                            "Weather coordinates will be based on "
-                            "the selected place."
-                        )
-
-                        if st.button(
-                            "🌦️ Load Weather for This Place",
-                            type="primary",
-                        ):
-                            st.session_state.weather_coords = (
-                                float(selected_data["latitude"]),
-                                float(selected_data["longitude"]),
-                            )
-                            st.session_state.weather_place = selected_place
-
+                        found_places = search_place(place_name.strip())
+                    st.session_state.weather_search_results = found_places
+                    st.session_state.weather_search_label = place_name.strip()
+                    if not found_places:
+                        st.warning("Location not found. Try a nearby town or a different spelling.")
                 except requests.RequestException as error:
-                    st.error(f"Location search failed: {error}")
+                    st.session_state.weather_search_results = []
+                    st.error(f"Location search failed: {error}. You can use the map or enter coordinates instead.")
+                except (ValueError, TypeError) as error:
+                    st.session_state.weather_search_results = []
+                    st.error(f"Could not read the location search response: {error}")
 
-    else:
+        found_places = st.session_state.get("weather_search_results", [])
+        if found_places:
+            options = [
+                f"{item.get('name', 'Unknown')}, {item.get('admin1', '')}, {item.get('country', '')}".strip(", ")
+                for item in found_places
+            ]
+            chosen_index = next(
+                (i for i, item in enumerate(found_places)
+                 if str(item.get("admin1", "")).casefold() == "karnataka"),
+                0,
+            )
+            selected_place = st.selectbox(
+                "Confirm matching location",
+                options,
+                index=chosen_index,
+                key="selected_geocoded_place",
+            )
+            selected_index = options.index(selected_place)
+            selected_data = found_places[selected_index]
+            st.caption("Weather will be fetched for the selected place coordinates.")
+            if st.button("🌦️ Load Weather for This Place", type="primary", key="load_named_place_weather"):
+                st.session_state.weather_coords = (
+                    float(selected_data["latitude"]),
+                    float(selected_data["longitude"]),
+                )
+                st.session_state.weather_place = selected_place
+                st.rerun()
+
+    elif location_mode == "🗺️ Select on Map":
         st.caption(
             "Click on the map to select your farm location. "
             "You can also enter latitude and longitude manually."
@@ -1298,5 +1302,8 @@ elif page == "ℹ️ About":
         Chat messages and uploaded images may be sent to your
         configured AI provider when you request AI assistance.
         Do not upload sensitive personal information.
+        
+        ### Developed_By : 
+                Team Coding_Ninjas...
         """
     )
